@@ -1,0 +1,23 @@
+#cloud-config
+package_update: true
+package_upgrade: true
+packages:
+  - curl
+  - git
+  - vim
+  - htop
+  - build-essential
+  - python3
+  - python3-pip
+  - nodejs
+  - npm
+
+runcmd:
+  # Install uv as the 'ubuntu' user, into ~/.cargo/bin
+  - sudo -u ubuntu sh -c 'curl -LsSf https://astral.sh/uv/install.sh | sh'
+  
+  # Optional: Ensure ~/.cargo/bin is in PATH for ubuntu user (usually already in .profile)
+  - echo 'export PATH="$HOME/.cargo/bin:$PATH"' | sudo -u ubuntu tee -a /home/ubuntu/.bashrc
+
+output:
+  all: '| tee -a /var/log/cloud-init-output.log'
