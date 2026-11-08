@@ -1,0 +1,25 @@
+
+#cloud-config
+
+hostname: opencode-vm
+
+package_update: true
+
+packages:
+  - curl
+  - git
+  - build-essential
+  - ca-certificates
+  - unzip
+  - tmux
+  - jq
+  - nodejs
+  - npm
+
+runcmd:
+  - mkdir -p /home/ubuntu/workspace
+  - chown ubuntu:ubuntu /home/ubuntu/workspace
+  - su - ubuntu -c 'curl -fsSL https://opencode.ai/install | bash'
+  - su - ubuntu -c 'echo "export PATH=\$HOME/.opencode/bin:\$PATH" >> ~/.bashrc'
+
+final_message: "OpenCode VM ready"
