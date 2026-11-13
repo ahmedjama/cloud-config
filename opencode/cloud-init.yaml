@@ -1,25 +1,591 @@
-
 #cloud-config
+# =============================================================================
+# opencode/cloud-init.yaml
+#
+# Ubuntu 24.04 VM for agentic AI development. Intended to be reached over SSH,
+# with OpenCode, Python/Node/Bun tooling, Docker, and a Starship prompt ready.
+#
+# Launch:
+#   multipass launch 24.04 --name opencode --cpus 4 --memory 8G --disk 40G \
+#     --cloud-init cloud-init.yaml
+#
+# See README.md for SSH setup and first-run steps.
+# =============================================================================
 
 hostname: opencode-vm
+manage_etc_hosts: true
+timezone: Etc/UTC
 
 package_update: true
+package_upgrade: true
+package_reboot_if_required: false
+
+apt:
+  conf: |
+    DPkg::Options { "--force-confdef"; "--force-confold"; };
+
+ssh_pwauth: false
+disable_root: true
+
+# A small safety net for builds, package installs, and agent processes.
+swap:
+  filename: /swapfile
+  size: 2G
+  maxsize: 2G
 
 packages:
-  - curl
-  - git
+  # Core utilities
   - build-essential
   - ca-certificates
+  - curl
+  - wget
+  - git
+  - git-lfs
+  - gnupg
   - unzip
+  - zip
+  - tar
+  - xz-utils
+  - rsync
+  - file
+  - less
+  - man-db
+  - vim
+  - nano
+  - bash-completion
+
+  # Shell / terminal quality of life
   - tmux
+  - htop
+  - btop
+  - ncdu
+  - tree
   - jq
-  - nodejs
-  - npm
+  - yq
+  - ripgrep
+  - fd-find
+  - fzf
+  - bat
+  - zoxide
+  - direnv
+  - shellcheck
+
+  # Python
+  - python3
+  - python3-pip
+  - python3-venv
+  - python3-dev
+  - pipx
+  - sqlite3
+  - libsqlite3-dev
+
+  # Build headers and networking / debugging
+  - pkg-config
+  - libssl-dev
+  - zlib1g-dev
+  - libffi-dev
+  - cmake
+  - openssh-server
+  - net-tools
+  - dnsutils
+  - iputils-ping
+  - traceroute
+  - lsof
+  - strace
+
+write_files:
+  - path: /etc/needrestart/conf.d/99-cloud-init.conf
+    permissions: '0644'
+    content: |
+      # Do not prompt for service restarts during unattended cloud-init runs.
+      $nrconf{restart} = 'a';
+
+  - path: /etc/sysctl.d/99-dev-vm.conf
+    permissions: '0644'
+    content: |
+      # Better defaults for file watchers, language servers, and containers.
+      fs.inotify.max_user_watches = 524288
+      fs.inotify.max_user_instances = 512
+      vm.max_map_count = 262144
+
+  # Shared PATH/environment file. Sourced by login shells (profile.d) and by
+  # .bashrc before its "non-interactive" early return, so `ssh vm -- cmd`
+  # also sees user-local tools.
+  - path: /home/ubuntu/.config/dev-env.sh
+    permissions: '0644'
+    content: |
+      # Managed by cloud-init (opencode/cloud-init.yaml).
+      case ":$PATH:" in
+        *":$HOME/.local/bin:"*) ;;
+        *) export PATH="$HOME/.local/bin:$PATH" ;;
+      esac
+
+      for _dev_bin in "$HOME/.cargo/bin" "$HOME/.bun/bin" "$HOME/.opencode/bin"; do
+        if [ -d "$_dev_bin" ]; then
+          case ":$PATH:" in
+            *":$_dev_bin:"*) ;;
+            *) export PATH="$_dev_bin:$PATH" ;;
+          esac
+        fi
+      done
+      unset _dev_bin
+
+      export EDITOR="${EDITOR:-vim}"
+      export VISUAL="${VISUAL:-$EDITOR}"
+      export PAGER="${PAGER:-less}"
+      export LESS="-R"
+
+  - path: /etc/profile.d/00-dev-tooling.sh
+    permissions: '0644'
+    content: |
+      # Managed by cloud-init (opencode/cloud-init.yaml).
+      if [ -f "$HOME/.config/dev-env.sh" ]; then
+        . "$HOME/.config/dev-env.sh"
+      fi
+
+  - path: /home/ubuntu/.config/starship.toml
+    permissions: '0644'
+    content: |
+      "$schema" = "https://starship.rs/config-schema.json"
+
+      add_newline = true
+      command_timeout = 2000
+      scan_timeout = 30
+
+      format = """
+      [╭─](bold blue)$username$hostname[ in ](bold blue)$directory$git_branch$git_status$git_state$docker_context$kubernetes$nodejs$python$rust$bun
+      [╰─](bold blue)$status$cmd_duration$character"""
+
+      right_format = "$time"
+
+      [character]
+      success_symbol = "[❯](bold green)"
+      error_symbol = "[❯](bold red)"
+      vimcmd_symbol = "[❮](bold green)"
+
+      [username]
+      show_always = true
+      style_user = "bold yellow"
+      style_root = "bold red"
+      format = "[$user]($style)"
+
+      [hostname]
+      ssh_only = false
+      style = "bold blue"
+      format = "[@$hostname]($style) "
+
+      [directory]
+      truncation_length = 4
+      truncate_to_repo = true
+      style = "bold cyan"
+      read_only = " 🔒"
+
+      [git_branch]
+      style = "bold purple"
+      format = "on [$branch]($style) "
+
+      [git_status]
+      style = "bold red"
+      format = '([\[$all_status$ahead_behind\]]($style) )'
+      conflicted = "="
+      ahead = "⇡${count}"
+      behind = "⇣${count}"
+      diverged = "⇕⇡${ahead_count}⇣${behind_count}"
+      untracked = "?"
+      modified = "!"
+      staged = "+${count}"
+      renamed = "»"
+      deleted = "✘"
+
+      [git_state]
+      style = "bold yellow"
+      format = '\([$state( $progress_current/$progress_total)]($style)\) '
+
+      [status]
+      disabled = false
+      style = "bold red"
+      format = "[exit $status]($style) "
+
+      [cmd_duration]
+      min_time = 2000
+      style = "bold yellow"
+      format = "took [$duration]($style) "
+
+      [docker_context]
+      style = "bold blue"
+      symbol = "docker:"
+      format = "via [$symbol$context]($style) "
+
+      [kubernetes]
+      disabled = false
+      style = "bold blue"
+      symbol = "k8s:"
+      format = "via [$symbol$context]($style) "
+
+      [nodejs]
+      style = "bold green"
+      format = "via [node $version]($style) "
+
+      [python]
+      style = "bold yellow"
+      format = "via [py $version]($style) "
+
+      [rust]
+      style = "bold red"
+      format = "via [rs $version]($style) "
+
+      [bun]
+      style = "bold white"
+      format = "via [bun $version]($style) "
+
+      [time]
+      disabled = false
+      time_format = "%R"
+      style = "bold dimmed white"
+      format = "at [$time]($style)"
+
+  - path: /home/ubuntu/.bash_aliases
+    permissions: '0644'
+    content: |
+      # Managed by cloud-init (opencode/cloud-init.yaml).
+      alias ll='ls -alF --color=auto'
+      alias la='ls -A --color=auto'
+      alias l='ls -CF --color=auto'
+
+      alias ..='cd ..'
+      alias ...='cd ../..'
+      alias ....='cd ../../..'
+
+      alias gs='git status -sb'
+      alias gd='git diff'
+      alias gds='git diff --staged'
+      alias gl='git log --oneline --graph --decorate -20'
+      alias gco='git checkout'
+      alias gb='git branch'
+
+      alias bat='batcat'
+      alias fd='fdfind'
+      alias ports='ss -tulpn'
+      alias path='echo "$PATH" | tr ":" "\n"'
+      alias reload='source ~/.bashrc'
+      alias opencode-update='curl -fsSL https://opencode.ai/install | bash'
+
+  - path: /home/ubuntu/.gitconfig
+    permissions: '0644'
+    content: |
+      # Managed by cloud-init (opencode/cloud-init.yaml).
+      # Set your identity with:
+      #   git config --global user.name "Your Name"
+      #   git config --global user.email "you@example.com"
+      [init]
+        defaultBranch = main
+      [core]
+        editor = vim
+        pager = less -FRX
+        autocrlf = input
+      [color]
+        ui = auto
+      [pull]
+        rebase = false
+      [fetch]
+        prune = true
+      [rebase]
+        autoStash = true
+      [merge]
+        conflictStyle = zdiff3
+      [diff]
+        algorithm = histogram
+        context = 3
+
+  - path: /home/ubuntu/.tmux.conf
+    permissions: '0644'
+    content: |
+      # Managed by cloud-init (opencode/cloud-init.yaml).
+      set -g mouse on
+      set -g history-limit 50000
+      set -g base-index 1
+      setw -g pane-base-index 1
+      set -g renumber-windows on
+      set -sg escape-time 10
+      set -g focus-events on
+      set -g default-terminal "screen-256color"
+      set -ag terminal-overrides ",xterm-256color:RGB"
+      set -g set-clipboard on
+      set -g status-style "bg=default,fg=white"
+      set -g status-left "#[bold] #S #[default]"
+      set -g status-right "#[dim]%Y-%m-%d %H:%M "
+      setw -g window-status-current-style "bold,fg=green"
+
+  - path: /home/ubuntu/.vimrc
+    permissions: '0644'
+    content: |
+      " Managed by cloud-init (opencode/cloud-init.yaml).
+      set nocompatible
+      syntax on
+      filetype plugin indent on
+      set number relativenumber
+      set expandtab tabstop=2 shiftwidth=2 softtabstop=2
+      set autoindent smartindent
+      set ignorecase smartcase incsearch hlsearch
+      set scrolloff=5
+      set signcolumn=yes
+      set mouse=a
+      set undofile
+      set undodir=~/.vim/undo//
+      set backupdir=~/.vim/backup//
+      set directory=~/.vim/swap//
+
+  - path: /usr/local/sbin/opencode-setup.sh
+    permissions: '0755'
+    content: |
+      #!/usr/bin/env bash
+      # Managed by cloud-init (opencode/cloud-init.yaml).
+      # Mostly idempotent; safe to re-run with:
+      #   sudo /usr/local/sbin/opencode-setup.sh
+      set -euo pipefail
+
+      export DEBIAN_FRONTEND=noninteractive
+      export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+
+      log()  { printf '[dev-setup] %s\n' "$*"; }
+      warn() { printf '[dev-setup] WARNING: %s\n' "$*" >&2; }
+
+      apt_install() {
+        DEBIAN_FRONTEND=noninteractive apt-get install -y "$@"
+      }
+
+      # Run a command as ubuntu with user-local tool directories on PATH.
+      run_as_ubuntu() {
+        su - ubuntu -s /bin/bash -c \
+          'set -o pipefail; export PATH="$HOME/.local/bin:$HOME/.cargo/bin:$HOME/.bun/bin:$HOME/.opencode/bin:$PATH"; '"$1"
+      }
+
+      # --- filesystem layout ---------------------------------------------------
+      install -d -o ubuntu -g ubuntu /home/ubuntu/workspace
+      install -d -o ubuntu -g ubuntu /home/ubuntu/.config
+      install -d -o ubuntu -g ubuntu /home/ubuntu/.local/bin
+      install -d -o ubuntu -g ubuntu /home/ubuntu/.vim/undo /home/ubuntu/.vim/backup /home/ubuntu/.vim/swap
+      chown ubuntu:ubuntu /home/ubuntu/.config /home/ubuntu/.local /home/ubuntu/.local/bin
+      chmod 755 /home/ubuntu/.config /home/ubuntu/.local /home/ubuntu/.local/bin
+
+      for _file in \
+        /home/ubuntu/.config/dev-env.sh \
+        /home/ubuntu/.config/starship.toml \
+        /home/ubuntu/.bash_aliases \
+        /home/ubuntu/.gitconfig \
+        /home/ubuntu/.tmux.conf \
+        /home/ubuntu/.vimrc
+      do
+        if [ -e "$_file" ]; then
+          chown ubuntu:ubuntu "$_file"
+        fi
+      done
+      unset _file
+
+      # --- Node.js LTS ---------------------------------------------------------
+      install_node() {
+        curl -fsSL https://deb.nodesource.com/setup_24.x | bash -
+        apt_install nodejs
+      }
+
+      if ! command -v node >/dev/null 2>&1; then
+        log "Installing Node.js LTS from NodeSource"
+        if ! install_node; then
+          warn "NodeSource install failed; falling back to distro Node.js"
+          rm -f /etc/apt/sources.list.d/nodesource.list /etc/apt/sources.list.d/nodesource.list.save
+          apt-get update -qq || true
+          apt_install nodejs npm || warn "Node.js could not be installed"
+        fi
+      fi
+
+      if command -v node >/dev/null 2>&1; then
+        log "Node.js $(node --version), npm $(npm --version 2>/dev/null || echo '?')"
+      fi
+
+      # --- GitHub CLI ----------------------------------------------------------
+      install_gh() {
+        install -d -m 0755 /etc/apt/keyrings
+        curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
+          -o /etc/apt/keyrings/githubcli-archive-keyring.gpg
+        chmod go+r /etc/apt/keyrings/githubcli-archive-keyring.gpg
+        printf 'deb [arch=%s signed-by=/etc/apt/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main\n' \
+          "$(dpkg --print-architecture)" > /etc/apt/sources.list.d/github-cli.list
+        apt-get update -qq
+        apt_install gh
+      }
+
+      if ! command -v gh >/dev/null 2>&1; then
+        log "Installing GitHub CLI"
+        if ! install_gh; then
+          warn "GitHub CLI repo failed; trying distro package"
+          rm -f /etc/apt/sources.list.d/github-cli.list /etc/apt/keyrings/githubcli-archive-keyring.gpg
+          apt-get update -qq || true
+          apt_install gh || warn "GitHub CLI could not be installed"
+        fi
+      fi
+
+      # --- Docker --------------------------------------------------------------
+      if ! command -v docker >/dev/null 2>&1; then
+        log "Installing Docker Engine"
+        if ! curl -fsSL https://get.docker.com | sh; then
+          warn "Docker convenience script failed; trying distro package"
+          rm -f /etc/apt/sources.list.d/docker.list /etc/apt/keyrings/docker.gpg /etc/apt/keyrings/docker.asc
+          apt-get update -qq || true
+          apt_install docker.io || warn "Docker could not be installed"
+        fi
+      fi
+
+      if command -v docker >/dev/null 2>&1; then
+        systemctl enable --now docker >/dev/null 2>&1 || warn "Could not enable Docker service"
+        if id -nG ubuntu | grep -qw docker; then
+          log "ubuntu is already in the docker group"
+        else
+          usermod -aG docker ubuntu
+          log "Added ubuntu to the docker group (log out and back in to use Docker)"
+        fi
+      fi
+
+      # --- user-local language/tool installers ---------------------------------
+      if ! run_as_ubuntu 'command -v uv >/dev/null 2>&1'; then
+        log "Installing uv"
+        run_as_ubuntu 'curl -LsSf https://astral.sh/uv/install.sh | sh' || warn "uv install failed"
+      fi
+
+      if ! run_as_ubuntu 'command -v bun >/dev/null 2>&1'; then
+        log "Installing Bun"
+        run_as_ubuntu 'curl -fsSL https://bun.sh/install | bash' || warn "Bun install failed"
+      fi
+
+      if ! run_as_ubuntu 'command -v opencode >/dev/null 2>&1'; then
+        log "Installing OpenCode"
+        run_as_ubuntu 'curl -fsSL https://opencode.ai/install | bash' || warn "OpenCode install failed"
+      fi
+
+      # --- npm/pnpm prefix -----------------------------------------------------
+      if command -v npm >/dev/null 2>&1; then
+        run_as_ubuntu 'npm config set prefix "$HOME/.local"' || warn "Could not set npm prefix"
+        if ! run_as_ubuntu 'command -v pnpm >/dev/null 2>&1'; then
+          log "Installing pnpm"
+          run_as_ubuntu 'npm install -g pnpm' || warn "pnpm install failed"
+        fi
+      fi
+
+      # --- Starship prompt -----------------------------------------------------
+      if ! command -v starship >/dev/null 2>&1; then
+        log "Installing Starship"
+        curl -sS https://starship.rs/install.sh | sh -s -- -y || warn "Starship install failed"
+      fi
+
+      # --- git-lfs filters -----------------------------------------------------
+      if command -v git-lfs >/dev/null 2>&1; then
+        git lfs install --system >/dev/null 2>&1 || warn "git lfs install --system failed"
+      fi
+
+      # --- shell integration ---------------------------------------------------
+      BASHRC=/home/ubuntu/.bashrc
+      [ -f "$BASHRC" ] || install -o ubuntu -g ubuntu -m 0644 /dev/null "$BASHRC"
+
+      # Source the shared environment file before .bashrc's non-interactive
+      # early return, so non-login remote commands get the user-local PATH.
+      if ! grep -q 'dev-env.sh' "$BASHRC"; then
+        log "Adding dev environment to the top of $BASHRC"
+        tmp=$(mktemp)
+        {
+          printf '%s\n' '# >>> dev-tooling env >>>'
+          printf '%s\n' 'if [ -f "$HOME/.config/dev-env.sh" ]; then . "$HOME/.config/dev-env.sh"; fi'
+          printf '%s\n' '# <<< dev-tooling env <<<'
+          cat "$BASHRC"
+        } > "$tmp"
+        cat "$tmp" > "$BASHRC"
+        rm -f "$tmp"
+      fi
+
+      if ! grep -q '>>> dev-tooling interactive >>>' "$BASHRC" 2>/dev/null; then
+        log "Adding interactive shell configuration to $BASHRC"
+        cat >> "$BASHRC" <<'BASHRC_EOF'
+
+      # >>> dev-tooling interactive >>>
+      # Managed by cloud-init (opencode/cloud-init.yaml).
+      export HISTSIZE=100000
+      export HISTFILESIZE=200000
+      export HISTCONTROL=ignoreboth:erasedups
+      export HISTTIMEFORMAT="%F %T "
+
+      shopt -s histappend checkwinsize cdspell globstar
+
+      # Keep history across multiple concurrent shells.
+      if [[ "${PROMPT_COMMAND:-}" != *"history -a"* ]]; then
+        PROMPT_COMMAND="history -a${PROMPT_COMMAND:+; $PROMPT_COMMAND}"
+      fi
+
+      # fzf: Ctrl-R history, Ctrl-T files, Alt-C directory jump.
+      if [ -f /usr/share/doc/fzf/examples/key-bindings.bash ]; then
+        . /usr/share/doc/fzf/examples/key-bindings.bash
+      fi
+      if [ -f /usr/share/doc/fzf/examples/completion.bash ]; then
+        . /usr/share/doc/fzf/examples/completion.bash
+      fi
+      export FZF_DEFAULT_OPTS="--height 60% --layout=reverse --border --info=inline"
+
+      # Smart cd / direnv.
+      if command -v zoxide >/dev/null 2>&1; then
+        eval "$(zoxide init bash)"
+      fi
+      if command -v direnv >/dev/null 2>&1; then
+        eval "$(direnv hook bash)"
+      fi
+
+      # Starship prompt.
+      if command -v starship >/dev/null 2>&1; then
+        eval "$(starship init bash)"
+      fi
+      # <<< dev-tooling interactive <<<
+      BASHRC_EOF
+      else
+        log "Interactive shell configuration already present in $BASHRC"
+      fi
+      chown ubuntu:ubuntu "$BASHRC"
+
+      # --- completions ---------------------------------------------------------
+      install -d -m 0755 /etc/bash_completion.d
+      if command -v gh >/dev/null 2>&1; then
+        gh completion -s bash > /etc/bash_completion.d/gh 2>/dev/null || true
+      fi
+      if command -v docker >/dev/null 2>&1; then
+        docker completion bash > /etc/bash_completion.d/docker 2>/dev/null || true
+      fi
+      if command -v starship >/dev/null 2>&1; then
+        starship completions bash > /etc/bash_completion.d/starship 2>/dev/null || true
+      fi
+      if run_as_ubuntu 'command -v uv >/dev/null 2>&1'; then
+        run_as_ubuntu 'mkdir -p "$HOME/.local/share/bash-completion/completions" && uv generate-shell-completion bash > "$HOME/.local/share/bash-completion/completions/uv"' \
+          || warn "Could not generate uv completions"
+      fi
+
+      # --- system tuning -------------------------------------------------------
+      sysctl --system >/dev/null 2>&1 || warn "Could not apply sysctl settings"
+
+      # --- summary -------------------------------------------------------------
+      log "Installed versions:"
+      for tool in git node npm pnpm uv bun opencode starship docker gh; do
+        version=""
+        if command -v "$tool" >/dev/null 2>&1; then
+          version="$("$tool" --version 2>/dev/null | head -n1 || true)"
+        elif run_as_ubuntu "command -v $tool >/dev/null 2>&1"; then
+          version="$(run_as_ubuntu "$tool --version 2>/dev/null | head -n1" || true)"
+        fi
+        if [ -n "$version" ]; then
+          printf '  %-10s %s\n' "$tool" "$version"
+        fi
+      done
+
+      if [ -f /var/run/reboot-required ]; then
+        warn "A reboot is required to finish applying system updates."
+      fi
+
+      log "Done. Open a new shell (or run: exec bash -l) to load the prompt and PATH."
 
 runcmd:
-  - mkdir -p /home/ubuntu/workspace
-  - chown ubuntu:ubuntu /home/ubuntu/workspace
-  - su - ubuntu -c 'curl -fsSL https://opencode.ai/install | bash'
-  - su - ubuntu -c 'echo "export PATH=\$HOME/.opencode/bin:\$PATH" >> ~/.bashrc'
+  - [bash, /usr/local/sbin/opencode-setup.sh]
 
-final_message: "OpenCode VM ready"
+final_message: "OpenCode dev VM ready. SSH in, then run: exec bash -l"
